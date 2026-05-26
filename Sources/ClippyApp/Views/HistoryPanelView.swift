@@ -258,7 +258,7 @@ private struct EmptyHistoryView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: query.isEmpty ? "paperclip.circle" : "magnifyingglass.circle")
+            Image(systemName: query.isEmpty ? "paperclip" : "magnifyingglass.circle")
                 .font(.system(size: 48, weight: .light))
                 .foregroundStyle(.secondary)
 

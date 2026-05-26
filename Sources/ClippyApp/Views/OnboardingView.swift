@@ -7,14 +7,10 @@ struct OnboardingView: View {
         VStack(spacing: 22) {
             Spacer(minLength: 18)
 
-            ZStack {
-                Circle()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(width: 88, height: 88)
-                Image(systemName: "paperclip")
-                    .font(.system(size: 42, weight: .semibold))
-                    .foregroundStyle(.primary)
-            }
+            Image(systemName: "paperclip")
+                .font(.system(size: 48, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 88, height: 88)
 
             VStack(spacing: 8) {
                 Text("Clippy")
