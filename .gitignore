@@ -1,0 +1,18 @@
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Xcode
+DerivedData/
+*.xcuserdata/
+*.xcuserstate
+
+# Local packaged app output
+Build/
+
+# macOS signing/export artifacts
+*.xcarchive
+*.ipa
+*.dSYM
