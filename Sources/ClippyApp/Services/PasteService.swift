@@ -6,6 +6,11 @@ struct PasteResult {
     var message: String
 }
 
+struct AccessibilityPermissionResult {
+    var isTrusted: Bool
+    var didOpenSettings: Bool
+}
+
 @MainActor
 final class PasteService {
     private let store: ClipboardStore
@@ -44,9 +49,26 @@ final class PasteService {
         return PasteResult(message: "Pasted")
     }
 
-    func requestAccessibilityPermission() {
+    func requestAccessibilityPermission() -> AccessibilityPermissionResult {
+        if isAccessibilityTrusted {
+            return AccessibilityPermissionResult(isTrusted: true, didOpenSettings: false)
+        }
+
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+        let didOpenSettings = openAccessibilitySettings()
+        return AccessibilityPermissionResult(
+            isTrusted: isAccessibilityTrusted,
+            didOpenSettings: didOpenSettings
+        )
+    }
+
+    @discardableResult
+    func openAccessibilitySettings() -> Bool {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else {
+            return false
+        }
+        return NSWorkspace.shared.open(url)
     }
 
     private func writeToPasteboard(_ item: ClipboardItem) {

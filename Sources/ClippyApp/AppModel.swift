@@ -45,6 +45,7 @@ final class AppModel: ObservableObject {
     @Published var toastMessage: String?
     @Published var previousApplication: NSRunningApplication?
     @Published var panelMode: PanelMode = .history
+    @Published private var accessibilityTrusted = false
 
     var showPanel: (() -> Void)?
     var hidePanel: (() -> Void)?
@@ -62,6 +63,7 @@ final class AppModel: ObservableObject {
         self.pasteService = PasteService(store: store, monitor: monitor)
         self.shortcutService = ShortcutService()
         self.launchAtLoginService = LaunchAtLoginService()
+        self.accessibilityTrusted = pasteService.isAccessibilityTrusted
 
         store.objectWillChange
             .sink { [weak self] _ in
@@ -93,7 +95,7 @@ final class AppModel: ObservableObject {
     }
 
     var isAccessibilityTrusted: Bool {
-        pasteService.isAccessibilityTrusted
+        accessibilityTrusted
     }
 
     func start() {
@@ -211,7 +213,7 @@ final class AppModel: ObservableObject {
             $0.autoPasteWhenAllowed = isEnabled
         }
         if isEnabled {
-            pasteService.requestAccessibilityPermission()
+            requestAccessibilityPermission()
         }
     }
 
@@ -341,14 +343,39 @@ final class AppModel: ObservableObject {
     }
 
     func requestAccessibilityPermission() {
-        pasteService.requestAccessibilityPermission()
-        toastMessage = "Accessibility request sent"
+        let result = pasteService.requestAccessibilityPermission()
+        accessibilityTrusted = result.isTrusted
+
+        if result.isTrusted {
+            toastMessage = "Accessibility is enabled"
+        } else if result.didOpenSettings {
+            toastMessage = "Enable Clippy in Accessibility"
+        } else {
+            toastMessage = "Open Privacy & Security > Accessibility"
+        }
+
+        scheduleAccessibilityRefresh()
+    }
+
+    func refreshAccessibilityStatus() {
+        accessibilityTrusted = pasteService.isAccessibilityTrusted
+        if accessibilityTrusted {
+            toastMessage = "Accessibility is enabled"
+        }
     }
 
     private func rememberPreviousApplication() {
         let current = NSWorkspace.shared.frontmostApplication
         if current?.bundleIdentifier != Bundle.main.bundleIdentifier {
             previousApplication = current
+        }
+    }
+
+    private func scheduleAccessibilityRefresh() {
+        for delay in [1.0, 3.0, 6.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.refreshAccessibilityStatus()
+            }
         }
     }
 
