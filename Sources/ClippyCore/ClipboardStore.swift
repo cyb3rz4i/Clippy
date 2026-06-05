@@ -5,33 +5,47 @@ private struct ClipboardDatabase: Codable {
     var items: [ClipboardItem]
 }
 
+@MainActor
 public final class ClipboardStore: ObservableObject {
-    @Published public private(set) var items: [ClipboardItem] = []
+    @Published public private(set) var items: [ClipboardItem] = [] {
+        didSet {
+            itemsVersion += 1
+            cachedSearch = nil
+        }
+    }
     @Published public private(set) var preferences: AppPreferences
 
     public let storageDirectory: URL
     public let historyURL: URL
     public let preferencesURL: URL
+    public var onImagePayloadsRemoved: (([StoredImagePayload]) -> Void)?
 
-    private let encoder: JSONEncoder
+    private let preferencesEncoder: JSONEncoder
     private let decoder: JSONDecoder
     private let fileManager: FileManager
+    private let historyQueue = DispatchQueue(label: "com.isaiahjohnson.Clippy.history-writer", qos: .utility)
+    private let historySaveDebounce: TimeInterval
+    private var pendingHistorySave: DispatchWorkItem?
+    private var itemsVersion = 0
+    private var cachedSearch: (query: String, version: Int, results: [ClipboardItem])?
 
     public init(
         storageDirectory: URL? = nil,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        historySaveDebounce: TimeInterval = 0.25
     ) {
         self.fileManager = fileManager
+        self.historySaveDebounce = historySaveDebounce
 
         let baseDirectory = storageDirectory ?? Self.defaultStorageDirectory(fileManager: fileManager)
         self.storageDirectory = baseDirectory
         self.historyURL = baseDirectory.appendingPathComponent("history.json")
         self.preferencesURL = baseDirectory.appendingPathComponent("preferences.json")
 
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        self.encoder = encoder
+        let preferencesEncoder = JSONEncoder()
+        preferencesEncoder.dateEncodingStrategy = .iso8601
+        preferencesEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        self.preferencesEncoder = preferencesEncoder
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -44,7 +58,7 @@ public final class ClipboardStore: ObservableObject {
 
         createStorageIfNeeded()
         loadHistory()
-        enforceHistoryLimit()
+        _ = enforceHistoryLimit()
     }
 
     @discardableResult
@@ -66,7 +80,7 @@ public final class ClipboardStore: ObservableObject {
             existing.sourceAppBundleID = sourceAppBundleID ?? existing.sourceAppBundleID
             existing.sourceAppName = sourceAppName ?? existing.sourceAppName
             items.insert(existing, at: 0)
-            saveHistory()
+            scheduleHistorySave()
             return existing
         }
 
@@ -79,8 +93,8 @@ public final class ClipboardStore: ObservableObject {
         )
 
         items.insert(item, at: 0)
-        enforceHistoryLimit()
-        saveHistory()
+        _ = enforceHistoryLimit()
+        scheduleHistorySave()
         return item
     }
 
@@ -89,7 +103,7 @@ public final class ClipboardStore: ObservableObject {
             return
         }
         items[index].lastUsedAt = date
-        saveHistory()
+        scheduleHistorySave()
     }
 
     public func setPinned(_ isPinned: Bool, id: UUID) {
@@ -97,54 +111,83 @@ public final class ClipboardStore: ObservableObject {
             return
         }
         items[index].isPinned = isPinned
-        enforceHistoryLimit()
-        saveHistory()
+        _ = enforceHistoryLimit()
+        scheduleHistorySave()
     }
 
     public func delete(id: UUID) {
+        let removed = items.filter { $0.id == id }
         items.removeAll { $0.id == id }
-        saveHistory()
+        notifyRemovedImagePayloads(from: removed)
+        scheduleHistorySave()
     }
 
     public func clearHistory(keepingPinned: Bool = false) {
+        let removed: [ClipboardItem]
         if keepingPinned {
+            removed = items.filter { !$0.isPinned }
             items.removeAll { !$0.isPinned }
         } else {
+            removed = items
             items.removeAll()
         }
-        saveHistory()
+        notifyRemovedImagePayloads(from: removed)
+        scheduleHistorySave()
     }
 
     public func updatePreferences(_ update: (inout AppPreferences) -> Void) {
+        let previousLimit = preferences.historyLimit
         var next = preferences
         update(&next)
         next.historyLimit = max(10, min(next.historyLimit, 1_000))
         preferences = next
-        enforceHistoryLimit()
+        let didShrinkLimit = preferences.historyLimit < previousLimit
+        let didChangeItems = didShrinkLimit ? enforceHistoryLimit() : false
         savePreferences()
-        saveHistory()
+        if didChangeItems {
+            scheduleHistorySave()
+        }
     }
 
     public func search(_ query: String) -> [ClipboardItem] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let ranked = items.compactMap { item -> (ClipboardItem, Int)? in
+        if let cachedSearch,
+           cachedSearch.query == trimmed,
+           cachedSearch.version == itemsVersion {
+            return cachedSearch.results
+        }
+
+        let ranked = items.enumerated().compactMap { index, item -> (ClipboardItem, Int, Date, Int, Date)? in
             let result = FuzzyMatcher.match(query: trimmed, candidate: item.searchableText)
             guard result.matched else {
                 return nil
             }
             let pinBonus = item.isPinned ? 10_000 : 0
-            let recencyBonus = max(0, 1_000 - items.firstIndex(of: item).defaulting(to: 1_000))
-            return (item, result.score + pinBonus + recencyBonus)
+            return (
+                item,
+                result.score + pinBonus,
+                item.lastUsedAt ?? .distantPast,
+                index,
+                item.createdAt
+            )
         }
 
-        return ranked
+        let results = ranked
             .sorted {
                 if $0.1 == $1.1 {
-                    return $0.0.createdAt > $1.0.createdAt
+                    if $0.2 != $1.2 {
+                        return $0.2 > $1.2
+                    }
+                    if $0.3 != $1.3 {
+                        return $0.3 < $1.3
+                    }
+                    return $0.4 > $1.4
                 }
                 return $0.1 > $1.1
             }
             .map(\.0)
+        cachedSearch = (trimmed, itemsVersion, results)
+        return results
     }
 
     public func mostRecentUnpinnedAwareItem() -> ClipboardItem? {
@@ -188,20 +231,52 @@ public final class ClipboardStore: ObservableObject {
         }
     }
 
-    private func saveHistory() {
+    public func flushPendingHistorySaves() {
+        guard let pendingHistorySave else {
+            return
+        }
+        pendingHistorySave.cancel()
+        self.pendingHistorySave = nil
+        let snapshot = items
+        let url = historyURL
+        historyQueue.sync {
+            Self.writeHistory(snapshot, to: url)
+        }
+    }
+
+    private func scheduleHistorySave() {
         createStorageIfNeeded()
+        pendingHistorySave?.cancel()
+        let snapshot = items
+        let url = historyURL
+        var workItem: DispatchWorkItem!
+        workItem = DispatchWorkItem {
+            guard !workItem.isCancelled else {
+                return
+            }
+            Self.writeHistory(snapshot, to: url)
+        }
+        pendingHistorySave = workItem
+        historyQueue.asyncAfter(deadline: .now() + historySaveDebounce, execute: workItem)
+    }
+
+    private static func writeHistory(_ items: [ClipboardItem], to url: URL) {
         do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(ClipboardDatabase(items: items))
-            try data.write(to: historyURL, options: [.atomic])
+            try data.write(to: url, options: [.atomic])
         } catch {
-            assertionFailure("Failed to save clipboard history: \(error)")
+            #if DEBUG
+            FileHandle.standardError.write(Data("Failed to save clipboard history: \(error)\n".utf8))
+            #endif
         }
     }
 
     private func savePreferences() {
         createStorageIfNeeded()
         do {
-            let data = try encoder.encode(preferences)
+            let data = try preferencesEncoder.encode(preferences)
             try data.write(to: preferencesURL, options: [.atomic])
         } catch {
             assertionFailure("Failed to save preferences: \(error)")
@@ -221,19 +296,55 @@ public final class ClipboardStore: ObservableObject {
         }
     }
 
-    private func enforceHistoryLimit() {
+    @discardableResult
+    private func enforceHistoryLimit() -> Bool {
         let limit = max(10, preferences.historyLimit)
-        let pinned = items.filter(\.isPinned)
         let unpinned = items.filter { !$0.isPinned }
+        guard unpinned.count > limit else {
+            return false
+        }
+
+        let keptUnpinnedIDs = Set(unpinned
             .sorted { $0.createdAt > $1.createdAt }
             .prefix(limit)
-        items = (pinned + unpinned)
-            .sorted {
-                if $0.isPinned != $1.isPinned {
-                    return $0.isPinned
-                }
-                return $0.createdAt > $1.createdAt
+            .map(\.id))
+
+        var removed: [ClipboardItem] = []
+        items.removeAll { item in
+            let shouldRemove = !item.isPinned && !keptUnpinnedIDs.contains(item.id)
+            if shouldRemove {
+                removed.append(item)
             }
+            return shouldRemove
+        }
+        notifyRemovedImagePayloads(from: removed)
+        return !removed.isEmpty
+    }
+
+    private func notifyRemovedImagePayloads(from removedItems: [ClipboardItem]) {
+        guard !removedItems.isEmpty else {
+            return
+        }
+
+        let remainingImageDigests = Set(items.compactMap { item -> String? in
+            if case .image(let payload) = item.payload {
+                return payload.contentDigest
+            }
+            return nil
+        })
+        var seenDigests: Set<String> = []
+        let payloads = removedItems.compactMap { item -> StoredImagePayload? in
+            guard case .image(let payload) = item.payload,
+                  !remainingImageDigests.contains(payload.contentDigest),
+                  seenDigests.insert(payload.contentDigest).inserted else {
+                return nil
+            }
+            return payload
+        }
+
+        if !payloads.isEmpty {
+            onImagePayloadsRemoved?(payloads)
+        }
     }
 
     private func normalizedPayload(_ payload: ClipboardPayload) -> ClipboardPayload? {
@@ -329,11 +440,5 @@ public final class ClipboardStore: ObservableObject {
         }
 
         return fileManager.temporaryDirectory.appendingPathComponent("Clippy", isDirectory: true)
-    }
-}
-
-private extension Optional where Wrapped == Int {
-    func defaulting(to value: Int) -> Int {
-        self ?? value
     }
 }

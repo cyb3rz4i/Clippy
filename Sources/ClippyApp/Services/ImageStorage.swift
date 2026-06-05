@@ -46,9 +46,38 @@ final class ImageStorage {
         )
     }
 
+    func delete(_ payload: StoredImagePayload) {
+        delete(digest: payload.contentDigest)
+    }
+
+    func delete(digest: String) {
+        let originalURL = originalsDirectory.appendingPathComponent("\(digest).png")
+        let thumbnailURL = thumbnailsDirectory.appendingPathComponent("\(digest).png")
+        try? fileManager.removeItem(at: originalURL)
+        try? fileManager.removeItem(at: thumbnailURL)
+    }
+
+    func deleteOrphans(keeping digests: Set<String>) {
+        deleteOrphans(in: originalsDirectory, keeping: digests)
+        deleteOrphans(in: thumbnailsDirectory, keeping: digests)
+    }
+
     private func createDirectories() {
         try? fileManager.createDirectory(at: originalsDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: thumbnailsDirectory, withIntermediateDirectories: true)
+    }
+
+    private func deleteOrphans(in directory: URL, keeping digests: Set<String>) {
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else {
+            return
+        }
+
+        for file in files where file.pathExtension == "png" && !digests.contains(file.deletingPathExtension().lastPathComponent) {
+            try? fileManager.removeItem(at: file)
+        }
     }
 
     private func pixelSize(for image: NSImage) -> PixelSize {

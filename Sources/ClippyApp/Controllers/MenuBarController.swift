@@ -7,6 +7,7 @@ final class MenuBarController: NSObject {
     private let statusItem: NSStatusItem
     private let panelController: HistoryPanelController
     private var cancellables: Set<AnyCancellable> = []
+    private var lastRenderedState: MenuBarVisualState?
 
     init(model: AppModel) {
         self.model = model
@@ -51,9 +52,7 @@ final class MenuBarController: NSObject {
     private func bindModel() {
         model.objectWillChange
             .sink { [weak self] _ in
-                DispatchQueue.main.async {
-                    self?.updateIcon()
-                }
+                self?.updateIconIfNeeded()
             }
             .store(in: &cancellables)
     }
@@ -132,13 +131,26 @@ final class MenuBarController: NSObject {
         NSApp.terminate(nil)
     }
 
+    private func updateIconIfNeeded() {
+        let state = model.menuBarState
+        guard state != lastRenderedState else {
+            return
+        }
+        updateIcon(for: state)
+    }
+
     private func updateIcon() {
+        updateIcon(for: model.menuBarState)
+    }
+
+    private func updateIcon(for state: MenuBarVisualState) {
         guard let button = statusItem.button else {
             return
         }
+        lastRenderedState = state
 
         let symbolName: String
-        switch model.menuBarState {
+        switch state {
         case .active:
             symbolName = "paperclip"
         case .paused:

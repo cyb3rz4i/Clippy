@@ -43,15 +43,15 @@ final class AppModel: ObservableObject {
     @Published var query = ""
     @Published var selectedIndex = 0
     @Published var toastMessage: String?
-    @Published var previousApplication: NSRunningApplication?
     @Published var panelMode: PanelMode = .history
-    @Published private var accessibilityTrusted = false
 
     var showPanel: (() -> Void)?
     var hidePanel: (() -> Void)?
     var togglePanel: (() -> Void)?
 
     private var cancellables: Set<AnyCancellable> = []
+    private var toastTask: Task<Void, Never>?
+    private var previousApplication: NSRunningApplication?
 
     init(storageDirectory: URL? = nil) {
         let store = ClipboardStore(storageDirectory: storageDirectory)
@@ -60,10 +60,19 @@ final class AppModel: ObservableObject {
             baseDirectory: store.storageDirectory.appendingPathComponent("ImagePayloads", isDirectory: true)
         )
         self.monitor = ClipboardMonitor(store: store, imageStorage: imageStorage)
-        self.pasteService = PasteService(store: store, monitor: monitor)
+        self.pasteService = PasteService(monitor: monitor)
         self.shortcutService = ShortcutService()
         self.launchAtLoginService = LaunchAtLoginService()
-        self.accessibilityTrusted = pasteService.isAccessibilityTrusted
+
+        store.onImagePayloadsRemoved = { [weak imageStorage] payloads in
+            payloads.forEach { imageStorage?.delete($0) }
+        }
+        imageStorage.deleteOrphans(keeping: Set(store.items.compactMap { item in
+            if case .image(let payload) = item.payload {
+                return payload.contentDigest
+            }
+            return nil
+        }))
 
         store.objectWillChange
             .sink { [weak self] _ in
@@ -94,27 +103,23 @@ final class AppModel: ObservableObject {
         return .active
     }
 
-    var isAccessibilityTrusted: Bool {
-        accessibilityTrusted
-    }
-
     func start() {
         let result = registerShortcuts()
         if let failure = result.failures.first {
-            toastMessage = "\(failure.action.displayName) shortcut is unavailable"
+            showToast("\(failure.action.displayName) shortcut is unavailable")
         }
         monitor.start()
-        syncLaunchAtLoginState()
+        syncLaunchAtLoginPreference()
     }
 
     func requestShowPanel() {
-        rememberPreviousApplication()
+        previousApplication = eligibleFrontmostApplication()
         panelMode = .history
         showPanel?()
     }
 
     func requestTogglePanel() {
-        rememberPreviousApplication()
+        previousApplication = eligibleFrontmostApplication()
         panelMode = .history
         togglePanel?()
     }
@@ -164,16 +169,18 @@ final class AppModel: ObservableObject {
             autoPaste: store.preferences.autoPasteWhenAllowed,
             previousApplication: previousApplication
         )
+        previousApplication = nil
         store.markUsed(id: item.id)
-        toastMessage = result.message
+        showToast(result.message)
         hidePanel?()
     }
 
     func pasteLatest() {
         guard let item = store.mostRecentUnpinnedAwareItem() else {
-            toastMessage = "No clipboard history yet"
+            showToast("No clipboard history yet")
             return
         }
+        previousApplication = eligibleFrontmostApplication()
         choose(item)
     }
 
@@ -184,7 +191,7 @@ final class AppModel: ObservableObject {
             $0.capturePaused = false
         }
         monitor.start()
-        toastMessage = "Clipboard history is on"
+        showToast("Clipboard history is on")
     }
 
     func setCaptureEnabled(_ isEnabled: Bool) {
@@ -205,16 +212,21 @@ final class AppModel: ObservableObject {
         store.updatePreferences {
             $0.capturePaused = isPaused
         }
-        toastMessage = store.preferences.capturePaused ? "Capture paused" : "Capture resumed"
+        showToast(store.preferences.capturePaused ? "Capture paused" : "Capture resumed")
     }
 
-    func setAutoPaste(_ isEnabled: Bool) {
+    func setAutoPasteWhenAllowed(_ isEnabled: Bool) {
         store.updatePreferences {
             $0.autoPasteWhenAllowed = isEnabled
         }
-        if isEnabled {
-            requestAccessibilityPermission()
+        showToast(isEnabled ? "Auto-paste enabled" : "Auto-paste disabled")
+    }
+
+    func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else {
+            return
         }
+        NSWorkspace.shared.open(url)
     }
 
     func setHistoryLimit(_ limit: Double) {
@@ -249,20 +261,20 @@ final class AppModel: ObservableObject {
                 preferences = previous
             }
             _ = registerShortcuts()
-            toastMessage = "Default shortcut unavailable: \(failure.shortcut.displayName)"
+            showToast("Default shortcut unavailable: \(failure.shortcut.displayName)")
         } else {
-            toastMessage = "Shortcuts reset"
+            showToast("Shortcuts reset")
         }
     }
 
     func clearHistory() {
         store.clearHistory()
-        toastMessage = "History cleared"
+        showToast("History cleared")
     }
 
     func clearUnpinnedHistory() {
         store.clearHistory(keepingPinned: true)
-        toastMessage = "Unpinned history cleared"
+        showToast("Unpinned history cleared")
     }
 
     func delete(_ item: ClipboardItem) {
@@ -278,14 +290,14 @@ final class AppModel: ObservableObject {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let bundleID = app.bundleIdentifier,
               bundleID != Bundle.main.bundleIdentifier else {
-            toastMessage = "No eligible frontmost app"
+            showToast("No eligible frontmost app")
             return
         }
 
         store.updatePreferences {
             $0.excludedBundleIDs.insert(bundleID)
         }
-        toastMessage = "\(app.localizedName ?? bundleID) excluded"
+        showToast("\(app.localizedName ?? bundleID) excluded")
     }
 
     func chooseAppForExclusion() {
@@ -312,7 +324,7 @@ final class AppModel: ObservableObject {
     func addExcludedApp(at url: URL) {
         guard let bundle = Bundle(url: url),
               let bundleID = bundle.bundleIdentifier else {
-            toastMessage = "Could not read that app"
+            showToast("Could not read that app")
             return
         }
 
@@ -323,7 +335,7 @@ final class AppModel: ObservableObject {
         let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
             ?? url.deletingPathExtension().lastPathComponent
-        toastMessage = "\(name) excluded"
+        showToast("\(name) excluded")
     }
 
     func removeExcludedBundleID(_ bundleID: String) {
@@ -337,46 +349,9 @@ final class AppModel: ObservableObject {
         store.updatePreferences {
             $0.launchAtLogin = didChange ? enabled : $0.launchAtLogin
         }
-        toastMessage = didChange
+        showToast(didChange
             ? (enabled ? "Launch at login enabled" : "Launch at login disabled")
-            : "Could not update launch at login"
-    }
-
-    func requestAccessibilityPermission() {
-        let result = pasteService.requestAccessibilityPermission()
-        accessibilityTrusted = result.isTrusted
-
-        if result.isTrusted {
-            toastMessage = "Accessibility is enabled"
-        } else if result.didOpenSettings {
-            toastMessage = "Enable Clippy in Accessibility"
-        } else {
-            toastMessage = "Open Privacy & Security > Accessibility"
-        }
-
-        scheduleAccessibilityRefresh()
-    }
-
-    func refreshAccessibilityStatus() {
-        accessibilityTrusted = pasteService.isAccessibilityTrusted
-        if accessibilityTrusted {
-            toastMessage = "Accessibility is enabled"
-        }
-    }
-
-    private func rememberPreviousApplication() {
-        let current = NSWorkspace.shared.frontmostApplication
-        if current?.bundleIdentifier != Bundle.main.bundleIdentifier {
-            previousApplication = current
-        }
-    }
-
-    private func scheduleAccessibilityRefresh() {
-        for delay in [1.0, 3.0, 6.0] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.refreshAccessibilityStatus()
-            }
-        }
+            : "Could not update launch at login")
     }
 
     @discardableResult
@@ -393,12 +368,12 @@ final class AppModel: ObservableObject {
 
     private func setShortcut(_ shortcut: GlobalShortcut, for action: ShortcutPreference) {
         guard shortcut.hasPrimaryModifier else {
-            toastMessage = "Use Command, Control, or Option with a key"
+            showToast("Use Command, Control, or Option with a key")
             return
         }
 
         if let duplicate = duplicateShortcutAction(for: shortcut, excluding: action) {
-            toastMessage = "Already used by \(duplicate.displayName)"
+            showToast("Already used by \(duplicate.displayName)")
             return
         }
 
@@ -420,9 +395,9 @@ final class AppModel: ObservableObject {
                 preferences = previous
             }
             _ = registerShortcuts()
-            toastMessage = "\(failure.shortcut.displayName) is unavailable"
+            showToast("\(failure.shortcut.displayName) is unavailable")
         } else {
-            toastMessage = "\(action.displayName) shortcut updated"
+            showToast("\(action.displayName) shortcut updated")
         }
     }
 
@@ -439,11 +414,31 @@ final class AppModel: ObservableObject {
         }?.0
     }
 
-    private func syncLaunchAtLoginState() {
-        let enabled = launchAtLoginService.isEnabled
-        if enabled != store.preferences.launchAtLogin {
-            store.updatePreferences {
-                $0.launchAtLogin = enabled
+    private func syncLaunchAtLoginPreference() {
+        let isEnabled = launchAtLoginService.isEnabled
+        store.updatePreferences {
+            $0.launchAtLogin = isEnabled
+        }
+    }
+
+    private func eligibleFrontmostApplication() -> NSRunningApplication? {
+        let app = NSWorkspace.shared.frontmostApplication
+        guard app?.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            return nil
+        }
+        return app
+    }
+
+    private func showToast(_ message: String) {
+        toastTask?.cancel()
+        toastMessage = message
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else {
+                return
+            }
+            await MainActor.run {
+                self?.toastMessage = nil
             }
         }
     }

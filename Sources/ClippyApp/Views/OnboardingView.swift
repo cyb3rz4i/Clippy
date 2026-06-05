@@ -22,9 +22,9 @@ struct OnboardingView: View {
             }
 
             VStack(spacing: 10) {
-                OnboardingPoint(systemImage: "lock.shield", title: "Local by default", detail: "History stays in this Mac app container.")
+                OnboardingPoint(systemImage: "lock.shield", title: "Local by default", detail: "History stays on this Mac.")
                 OnboardingPoint(systemImage: "command", title: "Fast access", detail: "\(model.store.preferences.showHistoryShortcut.displayName) opens your history.")
-                OnboardingPoint(systemImage: "hand.raised", title: "Permission-aware", detail: "Auto-paste is optional and copy-only mode always works.")
+                OnboardingPoint(systemImage: "return", title: "Paste in one motion", detail: "Pick a clip and Clippy can paste it back into the app you were using.")
             }
             .frame(maxWidth: 420)
 

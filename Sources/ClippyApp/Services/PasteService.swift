@@ -6,23 +6,13 @@ struct PasteResult {
     var message: String
 }
 
-struct AccessibilityPermissionResult {
-    var isTrusted: Bool
-    var didOpenSettings: Bool
-}
-
 @MainActor
 final class PasteService {
-    private let store: ClipboardStore
     private let monitor: ClipboardMonitor
+    private var hasPromptedForAccessibility = false
 
-    init(store: ClipboardStore, monitor: ClipboardMonitor) {
-        self.store = store
+    init(monitor: ClipboardMonitor) {
         self.monitor = monitor
-    }
-
-    var isAccessibilityTrusted: Bool {
-        AXIsProcessTrusted()
     }
 
     @discardableResult
@@ -37,38 +27,17 @@ final class PasteService {
             return PasteResult(message: "Copied")
         }
 
-        guard isAccessibilityTrusted else {
+        guard isAccessibilityTrusted(promptIfNeeded: true) else {
             return PasteResult(message: "Copied. Enable Accessibility for auto-paste.")
         }
 
         previousApplication?.activate()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            self.sendPasteKeystroke()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            sendPasteKeystroke()
         }
 
         return PasteResult(message: "Pasted")
-    }
-
-    func requestAccessibilityPermission() -> AccessibilityPermissionResult {
-        if isAccessibilityTrusted {
-            return AccessibilityPermissionResult(isTrusted: true, didOpenSettings: false)
-        }
-
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        let didOpenSettings = openAccessibilitySettings()
-        return AccessibilityPermissionResult(
-            isTrusted: isAccessibilityTrusted,
-            didOpenSettings: didOpenSettings
-        )
-    }
-
-    @discardableResult
-    func openAccessibilitySettings() -> Bool {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else {
-            return false
-        }
-        return NSWorkspace.shared.open(url)
     }
 
     private func writeToPasteboard(_ item: ClipboardItem) {
@@ -88,6 +57,20 @@ final class PasteService {
         }
 
         monitor.markInternalChange(pasteboard.changeCount)
+    }
+
+    private func isAccessibilityTrusted(promptIfNeeded: Bool) -> Bool {
+        if AXIsProcessTrusted() {
+            return true
+        }
+
+        guard promptIfNeeded, !hasPromptedForAccessibility else {
+            return false
+        }
+
+        hasPromptedForAccessibility = true
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
     }
 
     private func sendPasteKeystroke() {

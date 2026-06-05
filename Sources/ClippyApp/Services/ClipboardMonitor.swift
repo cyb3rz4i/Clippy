@@ -8,8 +8,9 @@ final class ClipboardMonitor {
     private let imageStorage: ImageStorage
     private var timer: Timer?
     private var lastChangeCount: Int
-    private var internalChangeCounts: Set<Int> = []
+    private var internalChangeCounts: [Int: Date] = [:]
     private let maxTextCharacters = 60_000
+    private let maxInternalChangeCounts = 32
 
     init(store: ClipboardStore, imageStorage: ImageStorage) {
         self.store = store
@@ -33,10 +34,19 @@ final class ClipboardMonitor {
     }
 
     func markInternalChange(_ changeCount: Int) {
-        internalChangeCounts.insert(changeCount)
+        pruneInternalChangeCounts(now: Date())
+        internalChangeCounts[changeCount] = Date()
+        if internalChangeCounts.count > maxInternalChangeCounts {
+            let overflow = internalChangeCounts
+                .sorted { $0.value < $1.value }
+                .prefix(internalChangeCounts.count - maxInternalChangeCounts)
+                .map(\.key)
+            overflow.forEach { internalChangeCounts.removeValue(forKey: $0) }
+        }
     }
 
     private func poll() {
+        pruneInternalChangeCounts(now: Date())
         let pasteboard = NSPasteboard.general
         let changeCount = pasteboard.changeCount
 
@@ -45,7 +55,7 @@ final class ClipboardMonitor {
         }
         lastChangeCount = changeCount
 
-        if internalChangeCounts.remove(changeCount) != nil {
+        if internalChangeCounts.removeValue(forKey: changeCount) != nil {
             return
         }
 
@@ -74,6 +84,12 @@ final class ClipboardMonitor {
             sourceAppBundleID: bundleID,
             sourceAppName: sourceApp?.localizedName
         )
+    }
+
+    private func pruneInternalChangeCounts(now: Date) {
+        internalChangeCounts = internalChangeCounts.filter { _, date in
+            now.timeIntervalSince(date) < 5
+        }
     }
 
     private func readPayload(from pasteboard: NSPasteboard) -> ClipboardPayload? {

@@ -88,19 +88,21 @@ struct HistoryPanelView: View {
     }
 
     private var historyContent: some View {
-        VStack(spacing: 0) {
+        let filteredItems = model.filteredItems
+
+        return VStack(spacing: 0) {
             header
 
             Divider()
 
-            if model.filteredItems.isEmpty {
+            if filteredItems.isEmpty {
                 EmptyHistoryView(query: model.query)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 8) {
-                            ForEach(Array(model.filteredItems.enumerated()), id: \.element.id) { index, item in
+                            ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
                                 ClipboardItemRow(
                                     item: item,
                                     index: index,
@@ -115,12 +117,11 @@ struct HistoryPanelView: View {
                         .padding(12)
                     }
                     .onChange(of: model.selectedIndex) { _, newValue in
-                        let items = model.filteredItems
-                        guard items.indices.contains(newValue) else {
+                        guard filteredItems.indices.contains(newValue) else {
                             return
                         }
                         withAnimation(.snappy(duration: 0.16)) {
-                            proxy.scrollTo(items[newValue].id, anchor: .center)
+                            proxy.scrollTo(filteredItems[newValue].id, anchor: .center)
                         }
                     }
                 }
@@ -172,14 +173,6 @@ struct HistoryPanelView: View {
                     tint: .primary
                 )
 
-                if !model.isAccessibilityTrusted && model.store.preferences.autoPasteWhenAllowed {
-                    StatusPill(
-                        title: "Copy-only until Accessibility is enabled",
-                        systemImage: "hand.raised.fill",
-                        tint: .primary
-                    )
-                }
-
                 Spacer()
 
                 Button {
@@ -204,8 +197,10 @@ struct HistoryPanelView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 12) {
-            Text("\(model.filteredItems.count) items")
+        let filteredCount = model.filteredItems.count
+
+        return HStack(spacing: 12) {
+            Text("\(filteredCount) items")
                 .foregroundStyle(.secondary)
 
             if let toast = model.toastMessage {
@@ -215,7 +210,7 @@ struct HistoryPanelView: View {
 
             Spacer()
 
-            Text("Enter to paste • Esc to close")
+            Text(model.store.preferences.autoPasteWhenAllowed ? "Enter to paste • Esc to close" : "Enter to copy • Esc to close")
                 .foregroundStyle(.tertiary)
         }
         .font(.system(size: 12, weight: .medium))
@@ -233,7 +228,7 @@ private struct QuickSelectButtons: View {
             Button("") {
                 model.selectItem(at: number - 1)
             }
-            .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: [])
+            .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: [.command])
         }
     }
 }

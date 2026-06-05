@@ -24,8 +24,8 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     public var captureEnabled: Bool
     public var capturePaused: Bool
     public var historyLimit: Int
-    public var autoPasteWhenAllowed: Bool
     public var launchAtLogin: Bool
+    public var autoPasteWhenAllowed: Bool
     public var excludedBundleIDs: Set<String>
     public var showHistoryShortcut: GlobalShortcut
     public var pasteLatestShortcut: GlobalShortcut
@@ -36,8 +36,8 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         captureEnabled: Bool = false,
         capturePaused: Bool = false,
         historyLimit: Int = 100,
-        autoPasteWhenAllowed: Bool = true,
         launchAtLogin: Bool = false,
+        autoPasteWhenAllowed: Bool = true,
         excludedBundleIDs: Set<String> = [],
         showHistoryShortcut: GlobalShortcut = .showHistoryDefault,
         pasteLatestShortcut: GlobalShortcut = .pasteLatestDefault,
@@ -47,12 +47,41 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         self.captureEnabled = captureEnabled
         self.capturePaused = capturePaused
         self.historyLimit = historyLimit
-        self.autoPasteWhenAllowed = autoPasteWhenAllowed
         self.launchAtLogin = launchAtLogin
+        self.autoPasteWhenAllowed = autoPasteWhenAllowed
         self.excludedBundleIDs = excludedBundleIDs
         self.showHistoryShortcut = showHistoryShortcut
         self.pasteLatestShortcut = pasteLatestShortcut
         self.pauseCaptureShortcut = pauseCaptureShortcut
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case hasCompletedOnboarding
+        case captureEnabled
+        case capturePaused
+        case historyLimit
+        case launchAtLogin
+        case autoPasteWhenAllowed
+        case excludedBundleIDs
+        case showHistoryShortcut
+        case pasteLatestShortcut
+        case pauseCaptureShortcut
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            hasCompletedOnboarding: try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false,
+            captureEnabled: try container.decodeIfPresent(Bool.self, forKey: .captureEnabled) ?? false,
+            capturePaused: try container.decodeIfPresent(Bool.self, forKey: .capturePaused) ?? false,
+            historyLimit: try container.decodeIfPresent(Int.self, forKey: .historyLimit) ?? 100,
+            launchAtLogin: try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false,
+            autoPasteWhenAllowed: try container.decodeIfPresent(Bool.self, forKey: .autoPasteWhenAllowed) ?? true,
+            excludedBundleIDs: try container.decodeIfPresent(Set<String>.self, forKey: .excludedBundleIDs) ?? [],
+            showHistoryShortcut: try container.decodeIfPresent(GlobalShortcut.self, forKey: .showHistoryShortcut) ?? .showHistoryDefault,
+            pasteLatestShortcut: try container.decodeIfPresent(GlobalShortcut.self, forKey: .pasteLatestShortcut) ?? .pasteLatestDefault,
+            pauseCaptureShortcut: try container.decodeIfPresent(GlobalShortcut.self, forKey: .pauseCaptureShortcut) ?? .pauseCaptureDefault
+        )
     }
 }
 

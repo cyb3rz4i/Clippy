@@ -10,9 +10,9 @@ Clippy is a premium native macOS clipboard history app with a persistent menu ba
 - Fuzzy search and quick number selection
 - Pin, delete, clear, pause capture, and app exclusions
 - Configurable global shortcuts
-- Optional auto-paste with Accessibility permission
-- Opt-in launch at login
-- App Sandbox entitlement and local-only privacy posture
+- Optional auto-paste with macOS Accessibility permission
+- Optional launch at login
+- Local-only privacy posture
 
 ## Development
 
@@ -34,7 +34,7 @@ To make the Xcode selection persistent on the Mac, run:
 sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 ```
 
-The app can also be opened from `Package.swift` in Xcode. A full Mac App Store archive should be produced from full Xcode with the sandbox entitlement in `Config/Clippy.entitlements`.
+The app can also be opened from `Package.swift` in Xcode. A full Mac App Store archive should be produced from full Xcode with any distribution entitlements required for that target.
 
 To build a local `.app` bundle for testing:
 

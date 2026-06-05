@@ -132,10 +132,11 @@ struct ClipboardItemRow: View {
 
 private struct Thumbnail: View {
     var url: URL
+    @State private var image: NSImage?
 
     var body: some View {
         Group {
-            if let image = NSImage(contentsOf: url) {
+            if let image {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
@@ -151,5 +152,34 @@ private struct Thumbnail: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
+        .task(id: url) {
+            image = await ThumbnailImageLoader.shared.image(for: url)
+        }
+    }
+}
+
+@MainActor
+private final class ThumbnailImageLoader {
+    static let shared = ThumbnailImageLoader()
+
+    private let cache = NSCache<NSURL, NSImage>()
+
+    func image(for url: URL) async -> NSImage? {
+        let key = url as NSURL
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+
+        let data = await Task.detached(priority: .utility) {
+            try? Data(contentsOf: url)
+        }.value
+
+        guard let data,
+              let image = NSImage(data: data) else {
+            return nil
+        }
+
+        cache.setObject(image, forKey: key)
+        return image
     }
 }
